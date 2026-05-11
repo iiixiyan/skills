@@ -16,40 +16,31 @@ description: 北京单场让球胜平负(让球SPF)专用预测 — 基于实时
 
 ## 数据源 — 并行多源获取（必须）
 
-### 核心策略：每场比赛同时从多个数据源拉取，交叉验证
+### 核心策略：串行取数为主，避免SofaScore拖垮流程
+
+**⚠️ 实战经验：从中国网络拉取SofaScore极易超时(20-40s)，不要用`concurrent.futures`并行。**
+
+改用串行策略：
+1. **先取ESPN**（快，1-3s完成全联赛数据）→ 获取战绩/排名/状态
+2. **再单独取SofaScore**（逐个联赛，timeout=12）→ 补ESPN未覆盖的小众联赛
+3. **单次查询限3个联赛**，避免进程hang住
+4. 500彩票网 **403禁止**，不可用
 
 ```python
-# 并行获取模板 — 每场比赛调此函数
-import requests, json, concurrent.futures
-
-def fetch_match_data(match_info):
-    """
-    并行获取所有可用数据源的数据
-    返回融合后的数据结构
-    """
-    home = match_info["home"]
-    away = match_info["away"]
-    league = match_info["league"]
-    date = match_info["date"]
+# 推荐策略：先ESPN快取，后SofaScore补漏
+def fetch_all_data(date, leagues):
+    # Step 1: ESPN快取所有主联赛
+    espn_data = fetch_espn_batch(date, leagues)
     
-    results = {}
+    # Step 2: SofaScore补小众联赛（逐个，短超时）
+    for league in [l for l in leagues if l not in espn_data]:
+        try:
+            data = fetch_sofascore(league, timeout=12)
+            espn_data[league] = data
+        except:
+            espn_data[league] = {"error": "SofaScore超时", "available": False}
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {
-            executor.submit(get_espn, league, date, home, away): "espn",
-            executor.submit(get_sofascore, league, date, home, away): "sofascore",
-            executor.submit(get_500_com, date, match_info.get("match_id")): "lottery",
-            executor.submit(get_weather, match_info.get("city", "")): "weather",
-        }
-        
-        for future in concurrent.futures.as_completed(futures):
-            source = futures[future]
-            try:
-                results[source] = future.result(timeout=15)
-            except Exception as e:
-                results[source] = {"error": str(e), "available": False}
-    
-    return fuse_data(results)  # 交叉验证融合
+    return fuse_data(espn_data)
 ```
 
 ### 数据源清单
@@ -103,13 +94,20 @@ LEAGUE_SOFA = {
 | 数据冲突 | 取主流数据源优先，次源作为偏离参考 |
 | 全部缺失 | 用最近5场平均补缺，标注"数据插补" |
 
-### 实战已验证数据源成功率
-| 数据源 | 覆盖率 | 成功率 | 适用场景 |
-|-------|-------|-------|---------|
-| **Sofascore** | 全球全覆盖 | 100% | ✅ 首选，所有联赛第一站 |
-| **ESPN** | 主流联赛 | ~70% | 网络不稳定，作为Sofascore补充 |
-| 500彩票网 | 中国彩市 | 需验证 | 获取官方让球数和SP |
-| Soccerway | 全球联赛 | 低 | 最后备选 |
+### 实战已验证数据源成功率（中国网络环境实测）
+| 数据源 | 覆盖率 | 响应速度 | 适用场景 |
+|-------|-------|---------|---------|
+| **ESPN API** | 主流联赛14+ | ✅ 快(1-3s) | **首选**，意甲/西甲/英超/葡超/俄超/沙特等 |
+| **SofaScore API** | 全球全覆盖 | ⚠️ 慢(20-40s)，频繁超时 | **备选**，只用于ESPN未覆盖的小众联赛(波兰/罗甲/瑞士) |
+| **500彩票网** | 中国彩市 | ❌ 403禁止 | 不可用，需找替代 |
+| **Soccerway** | 全球联赛 | ❌ 慢 | 最后备选 |
+
+⚠️ **重要网络经验：** 从中国网络环境拉取SofaScore时，请求经常超时(15-40s)或进程hang住。
+- 优先使用ESPN API（快且可靠）
+- SofaScore必设`timeout=12`防止阻塞
+- 不要使用`concurrent.futures`并行拉取SofaScore+ESPN，否则SofaScore的慢速会拖垮整个流程
+- 改用**串行**方式：先ESPN快取，再单独SofaScore补漏
+- 复杂多联赛查询容易导致子进程超时，每次查询控制≤3个联赛
 
 ## 动态模型选择器 — 按比赛特征选模型
 
@@ -305,14 +303,56 @@ def aggregate_predictions(match_info, fused_data):
 
 ## 预测输出模板
 
+### 输出格式1：逐场详细（含首/次选）
+
 ```
-【编号】联赛：主队 vs 客队（让球数：X）
-├─ 实时数据：主队 W-D-L / 客队 W-D-L / O/U
-├─ 实力评估：（模型评分、预期净胜球、关键因子得分）
-├─ 独立判断：让球胜 / 让球平 / 让球负
-├─ 置信度：★★★☆☆
-└─ 备注：（简短理由，3-4句话）
+### №{编号} {联赛} {主队}({让球数}) vs {客队}
+| 项目 | 内容 |
+|------|------|
+| 📊 实时数据 | {主队} #{排名}({积分}分) {近5场} | {客队} #{排名}({积分}分) {近5场} |
+| 🎯 **首选** | 🟢/🟡/🔴 **{让球胜/平/负}** |
+| 🎯 次选 | 🟢/🟡/🔴 {让球胜/平/负} |
+| ⭐ **置信度** | ★★★☆☆ |
+| 🔄 模型交叉 | ✅ 一致 / ⚠️ 分歧 |
+| 📝 因子 | 关键因子1/因子2/因子3 |
 ```
+
+### 输出格式2：汇总表（含五星标注）
+
+```
+| № | 联赛 | 主队 | 盘口 | 首选 | 次选 | 星级 |
+|---|------|------|:----:|:----:|:----:|:----:|
+| 324 | 意甲 | 那不勒 | -1 | 🟢让球主胜 | 🟡让球平 | ⭐⭐⭐⭐⭐ |
+| 334 | 葡超 | 本菲卡 | -1 | 🟢让球主胜 | 🟡让球平 | ★★★★☆ |
+```
+
+### 场次编号规则（北单专用）
+- 用户使用 **312-334** 之间的三位数编号系统（不是1-22）
+- 312-317: 小众联赛（罗甲/波兰甲/瑞典超/挪超）
+- 318-322: 瑞士甲（5场合并）
+- 323: 西乙或其他
+- 324-334: 主流联赛（意甲/英超/西甲/葡超等）
+- 必须严格使用用户提供的编号，不得自行重新编号
+
+### 五星标注条件 ⭐⭐⭐⭐⭐
+同时满足以下条件时标注五星：
+1. 预期净胜球(让球后) ≥ 0.8
+2. 排名差能支撑（主队排名前4 or 客队排名后6）
+3. 多模型一致或接近一致
+4. 让球数合理（不过深也不过浅）
+5. 置信度 ≥ 85%
+
+### 首/次选逻辑
+- **首选** = 主模型(SFM/RDM/FFM等)预测结果
+- **次选** = 备选模型交叉验证结果
+- 若主/备选一致 → 次选标同首选，置信度提升
+- 若主/备选分歧 → 次选标不同结果，置信度降低
+
+### 让球数处理（关键规则）
+- 每位用户给定的BJDC比赛都有**官方让球数**（如+2、-1、0）
+- 让球数必须以**用户提供的为准**，不要假设为0
+- 先独立评估球队实力 → 算出预期净胜球 → 再叠加让球数得到调整净胜球
+- **严禁反推**：不允许先看让球数再编理由
 
 ## 球队中文名映射（补充）
 | 中文 | 英文(ESPN) | 备注 |
