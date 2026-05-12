@@ -84,49 +84,71 @@ LEAGUE_SOFA = {
 - 从积分榜排名 + 剩余轮次判断
 - 从SofaScore获取各队近5场积分趋势
 
-#### 6️⃣ 赛季末修正因子 [2026-05-12新增]
-##### a) 精细化战意评分 urgency_v2
-复盘发现原SFM的战意评分过于粗糙（仅按排名区间给分），改用积分差模型：
+#### 6️⃣ 赛季末修正因子 [2026-05-12复盘优化 v2]
+##### a) 精细化战意评分 urgency_v3 — 修复阈值误判
+复盘发现 urgency_v2 三个问题：
+- 排名3的那不勒已保前四松懈，但仍给0.8(欧战) → 实际已无追求
+- 排名8的博洛尼实际在争欧战(仅差2分)，但却给0.1(无欲无求)
+- 阈值过于依赖排名，忽略了积分差距和剩余轮数
 
 ```python
-def urgency_v2(rank, pts, league_size, max_pts, remaining_matches):
+def urgency_v3(rank, pts, league_size, max_pts, remaining_matches):
     """
-    复盘优化版战意评估
-    - 与榜首/保级线的积分差决定真实战意
-    - 剩余轮数也参与计算
+    v3改进点：
+    - 用"与欧洲区的积分差"替代仅看排名
+    - 无欲无求判定考虑实际可争夺的剩余积分
     """
-    pts_per_match = max_pts / (league_size * 2)  # 联赛理论均分
-    champ_gap = max_pts - pts  # 与榜首差
-    relegation_line = (league_size - 4) * pts_per_match  # 保级线
+    pts_per_match = max_pts / (league_size * 2)
+    champ_gap = max_pts - pts
+    euro_rank = 7  # 欧战区(含欧协联)通常到第7名
+    euro_gap = get_euro_line(league_size) - pts  # 与欧战线的分差
+    relegation_rank = league_size - 3  # 降级区边缘
+    relegation_line = (relegation_rank) * pts_per_match
     
-    # 争冠可能: 差距<12分且有希望
-    if rank <= 4 and champ_gap < 12:
-        return 1.0
-    # 欧战可能: 前6
-    elif rank <= 6 and pts > (league_size * pts_per_match * 0.55):
-        return 0.8
-    # 保级压力: 接近降级区
-    elif pts < relegation_line * 1.15:
-        return 0.9  # 保级战意 > 欧战战意！
-    # 完全无欲无求
-    elif rank >= 7 and rank <= league_size - 5:
-        return 0.1  # 大幅降低无欲无求队战意
+    # 争冠需要差距<9分且排名前3
+    if rank <= 3 and champ_gap < 9:
+        return 1.0, "争冠"
+    # 保级压力 (pts比保级线高<10分)
+    elif pts < relegation_line + 10:
+        return 0.9, "保级"
+    # 欧战可争 (pts比欧战线高>=0且排名前8)
+    elif rank <= 8 and pts >= get_euro_line(league_size) - 5:
+        return 0.8, "欧战"
+    # 理论可能性(pts比欧战线差<12分，还有至少3轮)
+    elif pts > get_euro_line(league_size) - 12 and remaining_matches >= 3:
+        return 0.6, "理论欧战"
+    # 完全无欲无求（中游安全区+无欧战希望）
+    elif pts > relegation_line + 10 and pts < get_euro_line(league_size) - 12:
+        return 0.1, "无欲无求"
     else:
-        return 0.3
+        return 0.3, "中游保守"
+
+def get_euro_line(league_size):
+    """欧战区参考线（含欧协联）：20队联赛~37分，18队~34分"""
+    base = {20: 37, 18: 34, 16: 30, 12: 22, 24: 45}
+    return base.get(league_size, league_size * 1.85)
 ```
 
 ##### b) 5月主场优势衰减系数
-复盘验证：2026-05-11 15场主流联赛主场胜率仅40%(6/15)，低于赛季均值~45%。
 ```python
-MAY_HOME_COEFFICIENT = 0.90  # 5月主场优势打9折
+MAY_HOME_COEFFICIENT = 0.88  # 5月主场打88折（验证主场胜率40% vs 赛季均值~45%）
 MAY_SLACK_FACTOR = {
-    "top4_safe": 0.75,     # 前四无忧 → 松懈系数0.75
-    "midtable": 0.90,      # 中游无欲 → 干劲正常偏低
-    "relegation": 1.15,    # 保级区 → 超常发挥
+    "争冠": 0.90, "欧战": 0.85, "理论欧战": 0.80,
+    "保级": 1.15, "无欲无求": 0.75, "中游保守": 0.90,
 }
 ```
 
-所有SFM/PPM/HPM模型在5月输出前乘以对应系数修正。
+##### c) [NEW] H2H交锋记录因子
+复盘发现H2H是重要的修正因子——布拉加历来不虚本菲卡、博洛尼近2次客胜那不勒有先例。
+实际预测时从ESPN/SofaScore获取近3次H2H数据：
+```python
+H2H_ADJUSTMENT = {
+    "benfica_braga": -0.3,    # 布拉加历史克制本菲卡
+    "napoli_bologna": -0.2,   # 博洛尼亚近年交手不落下风
+}
+```
+如无法获取H2H数据，至少在备注列标注"缺少H2H数据"。
+预测输出时根据H2H比分调整预期净胜球：H2H客队占优 → 预期GD调低0.2-0.4。
 
 ### 数据融合（fuse_data）规则
 
@@ -427,12 +449,12 @@ adjusted_gd = expected_gd + handicap  # ❌ NOT: expected_gd - handicap
 # handicap = +2 → adjusted = expected_gd + 2 ✓
 ```
 
-**判断规则：**
+**判断规则（2026-05-12 v2优化：窗口缩窄，减少平局偏向）：**
 | adjusted_gd | 预测 | 举例 |
 |:-----------:|:----:|:----:|
-| ≥ +0.55 | 🟢 让球主胜 | 调整后仍净胜0.55球+ |
-| -0.55 ~ +0.55 | 🟡 让球平 | 差距在半球内 |
-| ≤ -0.55 | 🔴 让球客胜 | 调整后仍净负0.55球+ |
+| ≥ +0.35 | 🟢 让球主胜 | 调整后仍净胜0.35球+ |
+| -0.35 ~ +0.35 | 🟡 让球平 | 差距在0.35球内 |
+| ≤ -0.35 | 🔴 让球客胜 | 调整后仍净负0.35球+ |
 
 ### 首/次选强制规则（必须遵守）
 
