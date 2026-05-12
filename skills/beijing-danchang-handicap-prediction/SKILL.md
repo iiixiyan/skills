@@ -435,29 +435,53 @@ def aggregate_predictions(match_info, fused_data):
 4. 让球数合理（不过深也不过浅）
 5. 置信度 ≥ 85%
 
-### ⚠️ 让球数数学处理（关键修正）
+### ⚠️ 预测流程：先预测比分 → 再算SPF（2026-05-12最终修正）
 
-**让球后净胜球 = 预期净胜球(让球前) + 让球数**
-
-让球数 = 官方盘口值（如 -1 = 主队让1球，+2 = 主队受让2球）
+**核心原则：先预测实际比分，再用比分推算让球胜平负，禁止直接从GD跳到SPF。**
 
 ```python
-# 正确公式
-expected_gd = calc_expected_goal_diff(home_team, away_team)  # 让球前
-adjusted_gd = expected_gd + handicap  # ❌ NOT: expected_gd - handicap
-# handicap = -1 → adjusted = expected_gd + (-1) = expected_gd - 1 ✓
-# handicap = +2 → adjusted = expected_gd + 2 ✓
+def predict_spf(home_team, away_team, handicap):
+    # 第一步：计算预期净胜球（让球前）
+    expected_gd = calc_expected_goal_diff(home_team, away_team)
+    
+    # 第二步：从GD映射到实际比分
+    # 使用模型专属比分表（见"比分生成系统"）
+    actual_score = lookup_score(expected_gd, model_type)
+    home_goals, away_goals = parse_score(actual_score)
+    
+    # 第三步：用实际比分 + 盘口 计算SPF
+    # 让球方(主队)调整后进球 = 主队进球 + 盘口
+    adjusted_home = home_goals + handicap  
+    
+    if adjusted_home > away_goals:
+        return "让球胜"   # 🟢
+    elif adjusted_home == away_goals:
+        return "让球平"   # 🟡
+    else:
+        return "让球负"   # 🔴
 ```
+
+**对比旧逻辑（已废弃）：**
+| | 旧逻辑（错误） | 新逻辑（正确） |
+|:-|:--------------|:--------------|
+| 方法 | GD+盘口→阈值判断 | GD→实际比分→盘口→SPF |
+| 示例 | GD+0.39+(-1)=-0.61→🔴 | GD+0.39→比分2-1→调整2+(-1)=1 vs 1→🟡 |
+| 问题 | 阈值±0.35是人为设定，偏离真实足球比分 | 从真实比分出发，SPF自然得出 |
+
+**让球数含义：**
+- -1 = 主队让1球（主队进球-1后比较）
+- +2 = 主队受让2球（主队进球+2后比较）
+- 0 = 平手（直接比较）
 
 **判断规则（2026-05-12 v8优化：模型专属阈值 + 场景修正）：**
 
-### 模型专属判定阈值
-不同模型的判定阈值不同（CPM和RPM更窄，需要更高确定性）：
-| 模型 | 阈值 | 说明 |
-|:----:|:----:|:-----|
-| SFM | ±0.35 | 默认，赛季末战意模型 |
-| CPM | ±0.20 | 混沌模型需要更果断，减少平局 |
-| RPM | ±0.25 | 保级模型居中 |
+### 模型专属GD乘数与判定阈值（用于比分查找）
+以下阈值仅用于将GD映射到比分表，**不直接决定SPF**。SPF由实际比分+盘口计算得出。
+| 模型 | GD乘数 | 战意权重 | 判定阈值 | 说明 |
+|:----:|:------:|:--------:|:--------:|:-----|
+| SFM | 0.55 | **0.70** | ±0.35 | 战意权重最高，pts差影响力减小 |
+| RPM | 0.35 | 0.40 | ±0.25 | 保级对话保守，战意合理 |
+| CPM | 0.25 | 0.50 | ±0.20 | 混沌低乘数，战意占主导 |
 
 ### 场景修正（最小必要调整）
 在基础GD计算完成后，根据具体比赛场景做精准修正。以下为5月11日复盘验证的修正案例（后续每期预测后持续更新）：
@@ -486,13 +510,6 @@ adjusted_gd = expected_gd + handicap  # ❌ NOT: expected_gd - handicap
 通德拉(#8) vs 摩雷伦(#7)、圣克拉(#16) vs 葡国民(#15)
 - 排名接近的保级队，主场有绝望加成
 - **修正**: GD +0.35（保级主场同级desperation）
-
-### 模型专用GD乘数与战意权重
-| 模型 | GD乘数 | 战意权重 | 说明 |
-|:----:|:------:|:--------:|:-----|
-| SFM | 0.55 | **0.70** | 战意权重最高，pts差影响力减小 |
-| RPM | 0.35 | 0.40 | 保级对话保守，战意合理 |
-| CPM | 0.25 | 0.50 | 混沌低乘数，战意占主导 |
 
 ### H2H交锋记录
 复盘发现H2H不应过量叠加盘口。仅保留经统计验证的H2H：
