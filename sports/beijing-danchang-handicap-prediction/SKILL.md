@@ -84,6 +84,50 @@ LEAGUE_SOFA = {
 - 从积分榜排名 + 剩余轮次判断
 - 从SofaScore获取各队近5场积分趋势
 
+#### 6️⃣ 赛季末修正因子 [2026-05-12新增]
+##### a) 精细化战意评分 urgency_v2
+复盘发现原SFM的战意评分过于粗糙（仅按排名区间给分），改用积分差模型：
+
+```python
+def urgency_v2(rank, pts, league_size, max_pts, remaining_matches):
+    """
+    复盘优化版战意评估
+    - 与榜首/保级线的积分差决定真实战意
+    - 剩余轮数也参与计算
+    """
+    pts_per_match = max_pts / (league_size * 2)  # 联赛理论均分
+    champ_gap = max_pts - pts  # 与榜首差
+    relegation_line = (league_size - 4) * pts_per_match  # 保级线
+    
+    # 争冠可能: 差距<12分且有希望
+    if rank <= 4 and champ_gap < 12:
+        return 1.0
+    # 欧战可能: 前6
+    elif rank <= 6 and pts > (league_size * pts_per_match * 0.55):
+        return 0.8
+    # 保级压力: 接近降级区
+    elif pts < relegation_line * 1.15:
+        return 0.9  # 保级战意 > 欧战战意！
+    # 完全无欲无求
+    elif rank >= 7 and rank <= league_size - 5:
+        return 0.1  # 大幅降低无欲无求队战意
+    else:
+        return 0.3
+```
+
+##### b) 5月主场优势衰减系数
+复盘验证：2026-05-11 15场主流联赛主场胜率仅40%(6/15)，低于赛季均值~45%。
+```python
+MAY_HOME_COEFFICIENT = 0.90  # 5月主场优势打9折
+MAY_SLACK_FACTOR = {
+    "top4_safe": 0.75,     # 前四无忧 → 松懈系数0.75
+    "midtable": 0.90,      # 中游无欲 → 干劲正常偏低
+    "relegation": 1.15,    # 保级区 → 超常发挥
+}
+```
+
+所有SFM/PPM/HPM模型在5月输出前乘以对应系数修正。
+
 ### 数据融合（fuse_data）规则
 
 当多个数据源对同一指标给出不同值时：
@@ -126,6 +170,18 @@ def select_model(match_info, fused_data):
     is_cup_match = match_info.get("is_cup", False)
     
     # === 模型选择决策树 ===
+    
+    # [2026-05-12复盘优化] 赛季末联赛专项路由
+    
+    # 赛季末英冠 → 直接选CPM（混沌模型），禁用SFM
+    # 复盘验证：Millwall#14 vs Hull#20，SFM误判为让球主胜(+3.13偏差)
+    if season_phase == "END" and league == "英冠":
+        return "CPM"
+    
+    # 赛季末葡超中游（排名差<5）→ 优先RPM（保级压力模型）
+    # 复盘验证：葡超6场仅2场正确，赛季末葡超需降级HomeAdvantage
+    if season_phase == "END" and league == "葡超" and abs(rank_diff) < 5:
+        return "RPM"
     
     # 赛季末段（最后6轮）
     if season_phase == "END":
@@ -205,21 +261,21 @@ RDI = AttackStrength×0.30 + DefenseSolidity×0.25 + SetPieceDiff×0.15 + Stamin
 侧重战意和走势，赛季末最后6轮最佳。
 
 ```python
-SFI = FinalStretchPPG×0.30 + TargetUrgency×0.25 + OppositionStrength×0.20 + RestDays×0.15 + RefBias×0.10
+SFI = FinalStretchPPG×0.25 + TargetUrgency×0.30 + OppositionStrength×0.25 + RestDays×0.10 + RefBias×0.10
 ```
 
 - FinalStretchPPG: 最后6轮场均积分
-- TargetUrgency: 争冠/保级/欧战资格/无欲无求的战意加权
+- TargetUrgency: 争冠/保级/欧战资格/无欲无求的战意加权（使用urgency_v2精细评分）
 - OppositionStrength: 对手同期表现的反向加权
 
 ### 模型4: PPM（Power Projection Model）— 强弱分明专用
 排名差≥8位时使用，侧重实力差距。
 
 ```python
-PPI = TableGap×0.15 + StarPower×0.25 + AwayStability×0.20 + PressingDifferential×0.25 + BenchDepth×0.15
+PPI = TableGap×0.10 + StarPower×0.30 + AwayStability×0.25 + PressingDifferential×0.20 + BenchDepth×0.15
 ```
 
-- TableGap: 积分榜差距
+- TableGap: 积分榜差距（复盘发现排名差误导性大，Tottenham#6 vs Leeds#16实际1-1平，故降权）
 - StarPower: 核心球员个人能力差值
 - AwayStability: 客队客场稳定性
 - PressingDifferential: 高位逼抢效率差
@@ -249,15 +305,29 @@ FFI = WinStreak×0.25 + H2H_Dominance×0.20 + HomeShield×0.25 + OppMomentum×0.
 赛季末中游混战、双方都无明确战意时使用。
 
 ```python
-CPI = EndSeasonMomentum×0.30 + MidtableMeaningless×0.20 + HomeBottomDensity×0.25 + SetPieceDiff×0.15 + RefereeStyle×0.10
+CPI = EndSeasonMomentum×0.35 + MidtableMeaningless×0.25 + HomeBottomDensity×0.20 + SetPieceDiff×0.15 + RefereeStyle×0.05
+```
+
+- EndSeasonMomentum: 赛季末段冲刺状态（复盘后加权重，Millwall vs Hull中该因子最能解释结果）
+- MidtableMeaningless: 中游无欲无求评估
+- HomeBottomDensity: 主场优势在英冠末段同样减弱
+- SetPieceDiff: 定位球差距
+- RefereeStyle: 裁判风格（数据获取难度大，降低权重）
 ```
 
 ### 模型8: RPM（Relegation Pressure Model）— 保级区专用
-一方或双方都在降级区边缘时使用。
+一方或双方都在降级区边缘时使用。包含新增的保级队主场绝望加成因子。
 
 ```python
-RPI = RelegationFear×0.30 + AwaySolidity×0.25 + AttackDeadlock×0.20 + GoalDiffTrend×0.15 + SubImpact×0.10
+RPI = RelegationFear×0.25 + HomeDesperation×0.15 + AwaySolidity×0.20 + AttackDeadlock×0.20 + GoalDiffTrend×0.10 + SubImpact×0.10
 ```
+
+- RelegationFear: 降级恐惧度
+- **HomeDesperation**: [2026-05-12新增] 保级队主场的"绝望加成"——Santa Clara#16 2-0 Nacional#15证明保级队主场有额外战斗力
+- AwaySolidity: 客队客场稳定性
+- AttackDeadlock: 进攻困境
+- GoalDiffTrend: 净胜球趋势
+- SubImpact: 替补影响
 
 ### 模型9: UPM（Unbeaten Pressure Model）— 不败纪录专用
 某队携连胜/不败纪录出战，存在纪录压力。

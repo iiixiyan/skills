@@ -75,6 +75,33 @@ LEAGUE_SOFA = {
 #### 5️⃣ 战意评估（无需API，基于联赛阶段判断）
 - 赛季末段（4-6月）关注：争冠/保级/欧战资格/无欲无求
 
+#### 6️⃣ 赛季末修正因子 [2026-05-12复盘新增]
+##### a) 精细化战意评分 urgency_v2
+```python
+def urgency_v2(rank, pts, league_size, max_pts, remaining_matches):
+    pts_per_match = max_pts / (league_size * 2)
+    champ_gap = max_pts - pts
+    relegation_line = (league_size - 4) * pts_per_match
+    
+    if rank <= 4 and champ_gap < 12: return 1.0        # 争冠
+    elif rank <= 6 and pts > (league_size * pts_per_match * 0.55): return 0.8  # 欧战
+    elif pts < relegation_line * 1.15: return 0.9      # 保级 > 欧战！
+    elif rank >= 7 and rank <= league_size - 5: return 0.1  # 无欲无求
+    else: return 0.3
+```
+
+##### b) 5月主场优势衰减系数
+复盘验证：2026-05-11竞足10场主场胜率仅40%+方向准确率40%。主力模型(HPM/UPM)完全反偏。
+```python
+MAY_HOME_COEFFICIENT = 0.90
+MAY_SLACK_FACTOR = {
+    "top4_safe": 0.75,     # 前四无忧→松懈
+    "midtable": 0.90,      # 中游正常偏低
+    "relegation": 1.15,    # 保级→超常发挥
+}
+```
+所有HPM/UPM/IPI模型5月输出前乘系数修正。保级对话优先用RPM模型。
+
 ### 数据融合规则
 | 情况 | 处理策略 |
 |------|---------|
@@ -95,12 +122,14 @@ LEAGUE_SOFA = {
 
 ### 4. HPM 主场脉冲模型（主场强势）
 `HPI = MaradonaAura×0.30 + Top4Motivation×0.20 + MidtableResistance×0.20 + GoalDiffPace×0.15 + RotationImpact×0.15`
+⚠️ [复盘提醒] 5月赛季末主场优势衰减，MaradonaAura因子需乘以MAY_HOME_COEFFICIENT(0.90)。复盘验证：那不勒2-3博洛尼(HPM完全反偏)
 
 ### 5. TMM 动荡匹配模型（波动大比赛）
 `TMI = FanPressure×0.20 + ManagerCrisis×0.25 + RelegationUrgency×0.25 + LondonDerby×0.15 + HeadCoachRecord×0.15`
 
 ### 6. CPM 英冠混沌模型（赛季末垃圾对话）
-`CPI = EndSeasonMomentum×0.30 + MidtableMeaningless×0.20 + HomeBottomDensity×0.25 + SetPieceDiff×0.15 + RefereeStyle×0.10`
+`CPI = EndSeasonMomentum×0.35 + MidtableMeaningless×0.25 + HomeBottomDensity×0.20 + SetPieceDiff×0.15 + RefereeStyle×0.05`
+[复盘优化：EndSeasonMomentum提升至0.35，RefereeStyle降至0.05 — 英冠赛季末混沌状态优先]
 
 ### 7. LPM 西甲定位模型（西甲中下游）
 `LPI = HomeFortress×0.25 + CatalanCurse×0.20 + RelegationGap×0.20 + TechnicalDiff×0.15 + HeadCoachTactics×0.20`
@@ -113,6 +142,7 @@ LEAGUE_SOFA = {
 
 ### 10. UPM 不败金身模型（不败纪录球队）
 `UPI = InvinciblePressure×0.25 + ChampionEdge×0.20 + HomeDominance×0.25 + HistoricalWeight×0.15 + MilestoneMatch×0.15`
+⚠️ [复盘提醒] 5月赛季末"不败金身"实为双刃剑。本菲卡(不败纪录)2-2被布拉加逼平，全市场看好的不败队常松懈。5月输出UPM结果时乘以MAY_SLACK_FACTOR["top4_safe"]=0.75
 
 ## 玄学预测体系
 
@@ -129,6 +159,18 @@ LEAGUE_SOFA = {
 - **命名定律**: 反City/反B字头/反London等
 - **里程碑比赛**: 教练百场/门将生日/裁判百场等仪式性反弹
 - **联赛季节规律**: 斋月后首轮/赛季末收官战/保级冲刺期
+
+#### 已验证玄学因子 [2026-05-12复盘更新]
+| 玄学逻辑 | 验证状态 | 验证场次 | 说明 |
+|---------|:--------:|:--------:|:----|
+| **保级客战鸡血** | ✅ **已验证通过** | 006 米尔沃0-2赫尔城 | 保级队客场有超常爆发力，精确命中0-2 |
+| **不败金身崩塌** | ✅ 方向正确 | 010 本菲卡2-2布拉加 | 不败纪录队在赛季末常松懈，方向对但力度需调 |
+| **连胜利好阈值** | ❌ 未验证通过 | 004 那不勒连胜后输博洛尼 | 规律存在但方向需校对 |
+| **5月主场魔咒** | ✅ **已验证通过** | 全10场(主场胜率40%) | 5月主场优势显著低于赛季均值 |
+| **周一场必胜** | ❌ 失效 | 005 热刺1-1平 | 条件过于笼统，需附加积分差距条件 |
+| **红衣克加泰** | ❌ 失效 | 007 巴列卡1-1赫罗纳 | 巴列卡穿红也未胜 |
+
+**使用规则：** 已验证通过的玄学因子可优先使用（标注"复盘验证"），未验证的历史因子需附带至少3条独立数据作为依据
 
 ### 每场输出2个玄学比分，每个附带3-5条具体依据
 
