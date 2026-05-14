@@ -31,10 +31,17 @@ https://kt.59itou.com/379/match3/?matchid={matchid}&lotteryId=90&lottery_style=j
 
 Tab切换：
 ```javascript
+// ⚠️ dispatchEvent/browser_click 在此站Vant UI下不可靠，必须用原生.click()
 var tabs = document.querySelectorAll('.van-tab');
-var evt = new MouseEvent('click', {bubbles: true, cancelable: true});
-tabs[INDEX].dispatchEvent(evt);
-// 等待1秒后 document.body.innerText 获取内容
+for (var i = 0; i < tabs.length; i++) {
+    if (tabs[i].textContent.includes('欧指')) {  // 按文本匹配，不依赖索引
+        tabs[i].click();
+        break;
+    }
+}
+// 然后用 terminal sleep 1 && echo done 等待渲染（不要用setTimeout）
+// 再用 browser_console 获取 document.body.innerText
+// 验证：检查结果是否含目标Tab关键词（如'概率转换'→欧指，'必发交易盈亏'→盈亏）
 ```
 
 必须获取的Tab：
@@ -95,10 +102,30 @@ tabs[INDEX].dispatchEvent(evt);
 3. X:X (X%) | 依据: ...
 
 【赛果倾向】
-主胜/平/客胜 | 置信度: 高/中/低
+主胜/平/客胜 | 置信度: 高/中/低 | 让球方向: 让胜/让平/让负
 - 逻辑链: 数据锚点串联(≤25字)
 - 风险预警: 情报缺失/临场变动
 
 【价值提示】
 - 机构真实意图: ...
 - 市场陷阱: ...
+
+## 特殊情景：深盘（让≥2球）处理
+
+当竞足让球≥2球时，胜平负结果几乎无悬念，核心矛盾转移至让球方向。必须额外分析：
+
+1. **穿盘条件（让胜）**: 主队需净胜≥(让球数+1)。检查：
+   - 主队主场场均进球 vs 客队客场场均失球
+   - 主队对弱队净胜球分布（看H2H+对弱队战绩中的大胜频率）
+   - 比分高频中净胜3+球的场次占比
+
+2. **让平条件**: 净胜球恰好=让球数。这是最常见的"卡盘"结果。
+   - 若主队近期胜场多为1-2球小胜→让平概率高
+   - 若客队客场失球集中在中低位(场均失<2)→让平概率高
+
+3. **让负信号**: 
+   - 客胜/平赔被大量降低（机构防范冷门）
+   - 必发主胜交易占比>85%+庄亏→过热
+   - 亚盘水位异常（深盘低水≠安全）
+
+4. **默认倾向**: 无明确穿盘信号时，让≥2球优先输出让平/让负。统计上净胜3+球占比通常<30%。
