@@ -546,6 +546,6 @@ Value: 4px（所有间距为此单位的整数倍）
 
 ---
 
-*文档版本：4.0*
+*文档版本：4.1*
 *最后更新：2026-05-15*
-*关联Skill：ui-design-lint*
+*关联Skill：ui-design-lint v2.1*
