@@ -1,0 +1,105 @@
+---
+name: 59itou-data-fetch
+description: 从59itou.com获取北单/竞足比赛列表与详情 — 列表提取matchID → 逐场获取9个Tab完整数据
+category: sports
+---
+
+# 59itou 比赛数据获取（北单 + 竞足）
+
+## 触发条件
+需要从59itou.com获取北单或竞足比赛列表及详情数据时加载。
+
+## ⚠️ 重要
+该网站使用 **Vant UI** 框架，所有数据通过JS动态渲染。curl/requests无法获取数据，必须使用 `browser_navigate` + `browser_console`。
+
+---
+
+## 北单（北京单场）
+
+### 列表页
+```
+https://kt.59itou.com/883/danchang/
+```
+从 `.item[id]` 元素获取matchID：
+```javascript
+var items = document.querySelectorAll('.item[id]');
+items.forEach(function(item) {
+    var id = item.id;          // matchID
+    var text = item.textContent; // 场次/联赛/主客队/让球/SP
+});
+```
+
+### 详情页
+```
+https://kt.59itou.com/39/match3/?matchid={matchid}&lotteryId=45&lottery_style=dc
+```
+
+---
+
+## 竞足（竞彩足球）
+
+### 列表页
+```
+https://kt.59itou.com/192/jingcai/
+```
+⚠️ 竞足列表页没有matchID（DOM无 `.item[id]`），竞足matchID与北单**共用**。从北单列表获取matchID后，可在竞足详情页复用。
+
+### 详情页
+```
+https://kt.59itou.com/379/match3/?matchid={matchid}&lotteryId=90&lottery_style=jczq
+```
+
+---
+
+## 详情页 Tab 结构（北单和竞足完全相同）
+
+9个Tab，索引：
+
+| 索引 | Tab名 | 内容 | 状态 |
+|:---:|:----|:-----|:----:|
+| 0 | 直播 | （默认，同战绩） | ✅ |
+| 1 | 直播 | （重复） | - |
+| 2 | 阵容 | 首发/替补/身价/阵型/技术统计/伤停 | ✅ |
+| 3 | 战绩 | 近10场/主客战绩/H2H交锋/近期赛程/综合实力 | ✅ |
+| 4 | 欧指 | 36家公司赔率表/概率转换/常见比分/指数变化 | ✅ |
+| 5 | 亚指 | 盘口水位/赢盘率/盘口走势 | ✅ |
+| 6 | 情报 | 付费内容 | 🔒 |
+| 7 | 推荐 | 牛人推荐 | ⚠️ 常有空 |
+| 8 | 排名 | 联赛完整积分榜/球队统计 | ✅ |
+| 9 | 盈亏 | 必发交易量/盈亏/冷热指数（部分付费） | ⚠️ |
+
+### Tab切换方法
+```javascript
+// 不能用 browser_click，必须用JS触发
+var tabs = document.querySelectorAll('.van-tab');
+var evt = new MouseEvent('click', {bubbles: true, cancelable: true});
+tabs[INDEX].dispatchEvent(evt);
+// 等待 1秒后读取
+```
+
+### 提取数据
+```javascript
+document.body.innerText  // 获取当前Tab全部文本
+```
+
+Tab索引中：战绩(3)为默认加载Tab，欧指(4)和亚指(5)为赔率数据，排名(8)含完整积分榜。
+
+---
+
+## 参数速查
+
+| 参数 | 北单 | 竞足 |
+|:---|:---|:---|
+| 列表路径 | `/883/danchang/` | `/192/jingcai/` |
+| 详情路径 | `/39/match3/` | `/379/match3/` |
+| lotteryId | `45` | `90` |
+| lottery_style | `dc` | `jczq` |
+| matchID来源 | `.item[id]` | 与北单共用 |
+
+## 注意事项
+1. 必须使用 `browser_navigate` + `browser_console`，curl无法获取
+2. Tab切换后等待 **800ms-1s** 让内容渲染
+3. 竞足列表无matchID，通过北单列表获取后共用
+4. 情报Tab(6)为付费内容，推荐Tab(7)常为空
+5. 盈亏Tab(9)部分数据需付费订阅
+6. 列表页日期分组从 `document.body.innerText` 中提取（如"5月14日 周四 共24场"）
