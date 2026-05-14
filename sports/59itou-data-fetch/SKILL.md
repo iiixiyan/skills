@@ -9,6 +9,9 @@ category: sports
 ## 触发条件
 需要从59itou.com获取北单或竞足比赛列表及详情数据时加载。
 
+## ⛔ 强制规则：严禁总结
+获取详情页数据时，必须原样展示 `document.body.innerText` 的完整原始内容。禁止任何形式的总结、归纳、格式化、省略、简化。看到什么展示什么，一字不改。
+
 ## ⚠️ 重要
 该网站使用 **Vant UI** 框架，所有数据通过JS动态渲染。curl/requests无法获取数据，必须使用 `browser_navigate` + `browser_console`。
 
