@@ -63,21 +63,8 @@ allSpans.forEach(function(el) {
 ⚠️ 点击后可能跳转到不同路径（如 `/175/match3/` 或 `/456/match3/`），matchID在URL参数中，路径前缀不重要。
 
 ### 详情页
-**方法1（优先）**：从北单列表 `.item[id]` 获取，通过球队名交叉匹配。
+URL格式：`/379/match3/?matchid={matchid}&lotteryId=90&lottery_style=jczq`（路径前缀可能变化如/175/或/456/，matchID在参数中，前缀不重要）
 
-**方法2（兜底）**：竞足独有的比赛（如沙特联赛不在北单列表），点击竞足列表页中该场比赛的"分析"文字，页面跳转后从URL提取matchID：
-```javascript
-// 第N场比赛（0-indexed）
-var item = document.querySelectorAll('.matchitem')[N];
-var allSpans = item.querySelectorAll('span, p, div');
-allSpans.forEach(function(el) {
-    if (el.textContent.trim() === '分析') el.click();
-});
-// 跳转后从 URL 提取: window.location.href → matchid=XXXXXXX
-```
-URL格式：`/xxx/match3/?matchid={matchid}&lotteryId=90&lottery_style=jczq`
-
-### 详情页
 ```
 https://kt.59itou.com/379/match3/?matchid={matchid}&lotteryId=90&lottery_style=jczq
 ```
@@ -103,13 +90,20 @@ https://kt.59itou.com/379/match3/?matchid={matchid}&lotteryId=90&lottery_style=j
 
 ### Tab切换方法
 ```javascript
-// 不能用 browser_click，必须用JS触发
+// ⚠️ 不能用 browser_click 或 dispatchEvent（Vant UI 下均不可靠）
+// 必须用原生 .click() + 按文本匹配
 var tabs = document.querySelectorAll('.van-tab');
-var evt = new MouseEvent('click', {bubbles: true, cancelable: true});
-tabs[INDEX].dispatchEvent(evt);
-// 等待 1秒后读取
+for (var i = 0; i < tabs.length; i++) {
+    if (tabs[i].textContent.includes('欧指')) {   // 目标Tab名称
+        tabs[i].click();
+        break;
+    }
+}
+// 等待 1-2秒后读取（用 terminal sleep 1 而非 setTimeout）
 ```
-⚠️ **Tab切换可能静默失败**：dispatchEvent后约10%概率未真正切换（内容仍是上一个Tab）。验证方法：读取数据后检查是否包含目标Tab的关键词（如'概率转换'确认欧指Tab），若不匹配则重新dispatchEvent。
+**等待与验证**：JS端click后，用 `terminal sleep 1 && echo done` 等待渲染，再用 `browser_console` 获取 `document.body.innerText`。验证：检查结果是否含目标Tab关键词（如'概率转换'→欧指，'必发交易盈亏'→盈亏）。若不匹配，重新执行click+等待。
+
+**为什么dispatchEvent/browser_click不可靠**：此站Vant UI的van-tab组件只响应原生click事件，不响应合成MouseEvent或程序化ref点击。直接调用DOM元素的`.click()`是唯一可靠方式。
 
 ### 提取数据
 ```javascript
@@ -118,13 +112,6 @@ document.body.innerText  // 获取当前Tab全部文本
 document.body.innerText.substring(startIdx, endIdx)
 // 定位关键词: t.indexOf('概率转换'), t.indexOf('必发交易盈亏')
 ```
-
-### 提取数据
-```javascript
-document.body.innerText  // 获取当前Tab全部文本
-```
-
-Tab索引中：战绩(3)为默认加载Tab，欧指(4)和亚指(5)为赔率数据，排名(8)含完整积分榜。
 
 ---
 
